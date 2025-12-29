@@ -8,7 +8,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* =========================
-   Deterministic time helper
+   Deterministic Time Helper
 ========================= */
 function now(req) {
   if (process.env.TEST_MODE === "1" && req.headers["x-test-now-ms"]) {
@@ -18,7 +18,7 @@ function now(req) {
 }
 
 /* =========================
-   HOME (UI)
+   HOME PAGE (UI)
 ========================= */
 app.get("/", (req, res) => {
   res.send(`
@@ -42,18 +42,19 @@ app.get("/", (req, res) => {
 app.get("/api/healthz", async (req, res) => {
   try {
     await kv.ping();
-    res.json({ ok: true });
+    res.status(200).json({ ok: true });
   } catch {
     res.status(500).json({ ok: false });
   }
 });
 
 /* =========================
-   CREATE PASTE (shared logic)
+   SHARED CREATE LOGIC
 ========================= */
 async function createPaste(data, req) {
   const { content, ttl_seconds, max_views } = data;
 
+  // Validation
   if (!content || typeof content !== "string" || !content.trim()) {
     throw new Error("Invalid content");
   }
@@ -93,6 +94,16 @@ app.post("/api/pastes", async (req, res) => {
 });
 
 /* =========================
+   GET /api/pastes (NOT SUPPORTED)
+========================= */
+app.get("/api/pastes", (req, res) => {
+  res.status(405).json({
+    error: "Method not allowed",
+    message: "Use POST /api/pastes to create a paste"
+  });
+});
+
+/* =========================
    CREATE PASTE (FORM)
 ========================= */
 app.post("/create", async (req, res) => {
@@ -124,7 +135,7 @@ app.get("/api/pastes/:id", async (req, res) => {
 
   const currentTime = now(req);
 
-  /* TTL check */
+  // TTL check
   if (paste.ttl_seconds !== null) {
     const expiresAt = paste.createdAt + paste.ttl_seconds * 1000;
     if (currentTime >= expiresAt) {
@@ -133,16 +144,16 @@ app.get("/api/pastes/:id", async (req, res) => {
     }
   }
 
-  /* View limit check */
+  // View limit check
   if (paste.max_views !== null && paste.views >= paste.max_views) {
     return res.status(404).json({ error: "View limit exceeded" });
   }
 
-  /* Successful view */
+  // Successful view
   paste.views += 1;
   await kv.set(key, paste);
 
-  res.json({
+  res.status(200).json({
     content: paste.content,
     remaining_views:
       paste.max_views === null
@@ -165,16 +176,10 @@ app.get("/p/:id", async (req, res) => {
   if (!paste) {
     return res.status(404).send("Not found");
   }
-  app.get("/api/pastes", (req, res) => {
-  res.status(405).json({
-    error: "Method not allowed",
-    message: "Use POST /api/pastes to create a paste"
-  });
-});
 
   const currentTime = now(req);
 
-  /* TTL check */
+  // TTL check
   if (paste.ttl_seconds !== null) {
     const expiresAt = paste.createdAt + paste.ttl_seconds * 1000;
     if (currentTime >= expiresAt) {
@@ -183,12 +188,12 @@ app.get("/p/:id", async (req, res) => {
     }
   }
 
-  /* View limit check */
+  // View limit check
   if (paste.max_views !== null && paste.views >= paste.max_views) {
     return res.status(404).send("View limit exceeded");
   }
 
-  /* Successful view */
+  // Successful view
   paste.views += 1;
   await kv.set(key, paste);
 

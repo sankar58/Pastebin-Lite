@@ -1,20 +1,12 @@
-import "dotenv/config";
 import express from "express";
 import { nanoid } from "nanoid";
 import { kv } from "@vercel/kv";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-/* =======================
-   Middleware
-======================= */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-/* =======================
-   Utility: deterministic time
-======================= */
 function now(req) {
   if (process.env.TEST_MODE === "1" && req.headers["x-test-now-ms"]) {
     return Number(req.headers["x-test-now-ms"]);
@@ -22,71 +14,55 @@ function now(req) {
   return Date.now();
 }
 
-/* =======================
-   HOME PAGE
-======================= */
+/* ---------- HEALTH ---------- */
+app.get("/api/healthz", async (req, res) => {
+  try {
+    await kv.ping();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false });
+  }
+});
+
+/* ---------- HOME ---------- */
 app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
   res.send(`
     <html>
-      <head><title>Pastebin Lite</title></head>
       <body>
         <h2>Create Paste</h2>
         <form method="POST" action="/create">
-          <textarea name="content" rows="10" cols="60" required></textarea><br/><br/>
-          TTL (seconds): <input type="number" name="ttl_seconds"/><br/><br/>
-          Max Views: <input type="number" name="max_views"/><br/><br/>
-          <button type="submit">Create Paste</button>
+          <textarea name="content" required></textarea><br/>
+          <input name="ttl_seconds" placeholder="TTL seconds"/><br/>
+          <input name="max_views" placeholder="Max views"/><br/>
+          <button>Create</button>
         </form>
       </body>
     </html>
   `);
 });
 
-/* =======================
-   HEALTH CHECK
-======================= */
-app.get("/api/healthz", async (req, res) => {
-  try {
-    await kv.ping();
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ ok: false });
-  }
-});
+/* ---------- CREATE LOGIC ---------- */
+async function createPaste(data, req) {
+  const { content, ttl_seconds, max_views } = data;
 
-/* =======================
-   CORE CREATE LOGIC (REUSED)
-======================= */
-async function createPaste({ content, ttl_seconds, max_views }, req) {
-  if (!content || typeof content !== "string" || content.trim() === "") {
+  if (!content || typeof content !== "string" || !content.trim()) {
     throw new Error("Invalid content");
-  }
-  if (ttl_seconds !== undefined && (!Number.isInteger(ttl_seconds) || ttl_seconds < 1)) {
-    throw new Error("Invalid ttl_seconds");
-  }
-  if (max_views !== undefined && (!Number.isInteger(max_views) || max_views < 1)) {
-    throw new Error("Invalid max_views");
   }
 
   const id = nanoid(8);
-  const createdAt = now(req);
 
-  const paste = {
+  await kv.set(`paste:${id}`, {
     content,
-    createdAt,
+    createdAt: now(req),
     ttl_seconds: ttl_seconds ?? null,
     max_views: max_views ?? null,
     views: 0
-  };
+  });
 
-  await kv.set(`paste:${id}`, paste);
   return id;
 }
 
-/* =======================
-   CREATE PASTE (API)
-======================= */
+/* ---------- CREATE API ---------- */
 app.post("/api/pastes", async (req, res) => {
   try {
     const id = await createPaste(req.body, req);
@@ -94,14 +70,12 @@ app.post("/api/pastes", async (req, res) => {
       id,
       url: `${req.protocol}://${req.get("host")}/p/${id}`
     });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
-/* =======================
-   CREATE PASTE (FORM) ✅ FIXED
-======================= */
+/* ---------- CREATE FORM ---------- */
 app.post("/create", async (req, res) => {
   try {
     const id = await createPaste(
@@ -112,90 +86,24 @@ app.post("/create", async (req, res) => {
       },
       req
     );
-
     res.redirect(`/p/${id}`);
-  } catch (err) {
-    res.status(400).send(`
-      <h3>Error creating paste</h3>
-      <pre>${err.message}</pre>
-      <a href="/">Go back</a>
-    `);
+  } catch (e) {
+    res.status(400).send(e.message);
   }
 });
 
-/* =======================
-   FETCH PASTE (API)
-======================= */
-app.get("/api/pastes/:id", async (req, res) => {
-  const key = `paste:${req.params.id}`;
-  const paste = await kv.get(key);
-  if (!paste) return res.status(404).json({ error: "Not found" });
-
-  const currentTime = now(req);
-
-  if (paste.ttl_seconds) {
-    const expiresAt = paste.createdAt + paste.ttl_seconds * 1000;
-    if (currentTime >= expiresAt) {
-      await kv.del(key);
-      return res.status(404).json({ error: "Expired" });
-    }
-  }
-
-  if (paste.max_views !== null && paste.views >= paste.max_views) {
-    return res.status(404).json({ error: "View limit exceeded" });
-  }
-
-  paste.views += 1;
-  await kv.set(key, paste);
-
-  res.json({
-    content: paste.content,
-    remaining_views:
-      paste.max_views === null ? null : Math.max(0, paste.max_views - paste.views),
-    expires_at:
-      paste.ttl_seconds === null
-        ? null
-        : new Date(paste.createdAt + paste.ttl_seconds * 1000).toISOString()
-  });
-});
-
-/* =======================
-   VIEW PASTE (HTML)
-======================= */
+/* ---------- VIEW ---------- */
 app.get("/p/:id", async (req, res) => {
   const key = `paste:${req.params.id}`;
   const paste = await kv.get(key);
-  if (!paste) return res.status(404).send("Not Found");
 
-  const currentTime = now(req);
-
-  if (paste.ttl_seconds) {
-    const expiresAt = paste.createdAt + paste.ttl_seconds * 1000;
-    if (currentTime >= expiresAt) {
-      await kv.del(key);
-      return res.status(404).send("Expired");
-    }
-  }
-
-  if (paste.max_views !== null && paste.views >= paste.max_views) {
-    return res.status(404).send("View limit exceeded");
-  }
+  if (!paste) return res.status(404).send("Not found");
 
   paste.views += 1;
   await kv.set(key, paste);
 
-  res.send(`
-    <html>
-      <body>
-        <pre>${paste.content.replace(/</g, "&lt;")}</pre>
-      </body>
-    </html>
-  `);
+  res.send(`<pre>${paste.content.replace(/</g, "&lt;")}</pre>`);
 });
 
-/* =======================
-   START SERVER
-======================= */
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+/* 🔥 REQUIRED FOR VERCEL */
+export default app;

@@ -231,6 +231,17 @@ app.get("/p/:id", async (req, res) => {
 });
 
 /* =========================
+   START SERVER (LOCAL ONLY)
+========================= */
+const PORT = process.env.PORT || 3000;
+
+if (process.env.NODE_ENV !== "production") {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+/* =========================
    REQUIRED FOR VERCEL
 ========================= */
 export default app;
